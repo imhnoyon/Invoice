@@ -23,7 +23,7 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/v1/auth/', include('Authentication.urls')),
     path('api/v1/subscriptions/', include('Subscriptions.urls')),
-    path('api/v1/dashboard/', include('Dashboard.urls')),
+    path('api/v1/dashboard/', include('Deshboard.urls')),
 ]
 if settings.DEBUG:
     from django.conf import settings
