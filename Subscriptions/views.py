@@ -68,15 +68,15 @@ class CreateCheckoutSessionView(views.APIView):
                 "mode": "subscription",
                 "subscription_data": {
                     "metadata": {
-                        "user_id": user.id,
-                        "plan_id": plan.id,
+                        "user_id": str(user.id),
+                        "plan_id": str(plan.id),
                     }
                 },
                 "success_url": "http://localhost:3000/success?session_id={CHECKOUT_SESSION_ID}",
                 "cancel_url": "http://localhost:3000/cancel",
                 "metadata": {
-                    "user_id": user.id,
-                    "plan_id": plan.id,
+                    "user_id": str(user.id),
+                    "plan_id": str(plan.id),
                 }
             }
 
@@ -140,38 +140,46 @@ class StripeWebhookView(views.APIView):
         return Response(status=status.HTTP_200_OK)
 
     def handle_checkout_session_completed(self, session):
-        metadata = getattr(session, 'metadata', {})
-        user_id = metadata.get('user_id') if metadata else None
-        plan_id = metadata.get('plan_id') if metadata else None
-        subscription_id = getattr(session, 'subscription', None)
+        session_dict = session.to_dict() if hasattr(session, 'to_dict') else dict(session)
+        metadata = session_dict.get('metadata', {})
+        user_id = metadata.get('user_id')
+        plan_id = metadata.get('plan_id')
+        subscription_id = session_dict.get('subscription')
 
         if user_id and plan_id and subscription_id:
             try:
-                # Stripe থেকে সাবস্ক্রিপশন ডাটা রিট্রিভ করা যাতে ডেট পাওয়া যায়
-                subscription_obj = stripe.Subscription.retrieve(subscription_id)
+                # Retrieve and convert the subscription object
+                subscription = stripe.Subscription.retrieve(subscription_id)
+                sub_dict = subscription.to_dict() if hasattr(subscription, 'to_dict') else dict(subscription)
                 
                 user_sub = UserSubscription.objects.get(user_id=user_id)
                 user_sub.stripe_subscription_id = subscription_id
                 user_sub.plan_id = plan_id
                 
-                # টাইমস্ট্যাম্প কনভার্ট করে সেভ করা
-                user_sub.start_date = timezone.datetime.fromtimestamp(
-                    subscription_obj['current_period_start'], tz=timezone.get_current_timezone()
-                )
-                user_sub.end_date = timezone.datetime.fromtimestamp(
-                    subscription_obj['current_period_end'], tz=timezone.get_current_timezone()
-                )
+                # Robust date handling with fallback to timezone.now()
+                start_ts = sub_dict.get('current_period_start')
+                end_ts = sub_dict.get('current_period_end')
 
+                if start_ts:
+                    user_sub.start_date = timezone.datetime.fromtimestamp(start_ts, tz=timezone.get_current_timezone())
+                else:
+                    user_sub.start_date = timezone.now()
+
+                if end_ts:
+                    user_sub.end_date = timezone.datetime.fromtimestamp(end_ts, tz=timezone.get_current_timezone())
+                
                 user_sub.status = 'ACTIVE'
                 user_sub.save()
+                print(f"Successfully updated subscription for user {user_id}")
             except Exception as e:
-                print(f"Error saving subscription: {str(e)}")
+                print(f"Error saving subscription in checkout: {str(e)}")
 
     def handle_subscription_updated(self, subscription):
-        stripe_subscription_id = getattr(subscription, 'id', None)
-        metadata = getattr(subscription, 'metadata', {})
-        user_id = metadata.get('user_id') if metadata else None
-        plan_id = metadata.get('plan_id') if metadata else None
+        sub_dict = subscription.to_dict() if hasattr(subscription, 'to_dict') else dict(subscription)
+        stripe_subscription_id = sub_dict.get('id')
+        metadata = sub_dict.get('metadata', {})
+        user_id = metadata.get('user_id')
+        plan_id = metadata.get('plan_id')
         
         user_sub = UserSubscription.objects.filter(stripe_subscription_id=stripe_subscription_id).first()
         
@@ -206,25 +214,26 @@ class StripeWebhookView(views.APIView):
             user_sub.save()
 
     def handle_invoice_payment_succeeded(self, invoice):
-        customer_id = getattr(invoice, 'customer', None)
-        subscription_id = getattr(invoice, 'subscription', None)
+        inv_dict = invoice.to_dict() if hasattr(invoice, 'to_dict') else dict(invoice)
+        customer_id = inv_dict.get('customer')
+        subscription_id = inv_dict.get('subscription')
         
         user_sub = UserSubscription.objects.filter(stripe_customer_id=customer_id).first()
         if user_sub:
-            # যদি আগে থেকেই সাবস্ক্রিপশন আইডি বা প্ল্যান সেভ না হয়ে থাকে, তবে এখান থেকে সেভ হবে
             if subscription_id and (not user_sub.stripe_subscription_id or not user_sub.plan):
                 try:
                     subscription = stripe.Subscription.retrieve(subscription_id)
-                    user_sub.stripe_subscription_id = subscription_id
+                    sub_dict = subscription.to_dict() if hasattr(subscription, 'to_dict') else dict(subscription)
                     
-                    sub_metadata = getattr(subscription, 'metadata', {})
-                    user_sub.plan_id = sub_metadata.get('plan_id') if sub_metadata else None
+                    user_sub.stripe_subscription_id = subscription_id
+                    sub_metadata = sub_dict.get('metadata', {})
+                    user_sub.plan_id = sub_metadata.get('plan_id')
                     
                     user_sub.start_date = timezone.datetime.fromtimestamp(
-                        getattr(subscription, 'current_period_start'), tz=timezone.get_current_timezone()
+                        sub_dict.get('current_period_start'), tz=timezone.get_current_timezone()
                     )
                     user_sub.end_date = timezone.datetime.fromtimestamp(
-                        getattr(subscription, 'current_period_end'), tz=timezone.get_current_timezone()
+                        sub_dict.get('current_period_end'), tz=timezone.get_current_timezone()
                     )
                 except Exception as e:
                     print(f"Error retrieving subscription in invoice handler: {str(e)}")
