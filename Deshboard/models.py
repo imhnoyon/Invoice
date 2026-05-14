@@ -1,0 +1,46 @@
+from django.db import models
+from Authentication.models import User
+
+class Client(models.Model):
+
+    CLIENT_TYPE_CHOICES = (
+    ("independent", "Indépendant"),
+    ("company", "Société"),)
+
+    CLIENT_CATEGORY_CHOICES = (
+    ("eu_client", "Client dans l'UE (hors France)"),
+    ("non_eu_client", "Client hors UE"),
+    ("france_client", "Client en France"),)
+       
+    #User 
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="clients")
+
+    # Common Fields
+    client_type = models.CharField(max_length=20,choices=CLIENT_TYPE_CHOICES)
+    email = models.EmailField(unique=True)
+    phone = models.CharField(max_length=20)
+    billing_address = models.TextField()
+    postal_code = models.CharField(max_length=20)
+    city = models.CharField(max_length=100)
+    country = models.CharField(max_length=100)
+
+    client_category = models.CharField(max_length=100,choices=CLIENT_CATEGORY_CHOICES)
+    internal_notes = models.TextField(blank=True,null=True)
+
+    # Individual Fields
+    first_name = models.CharField(max_length=100,blank=True,null=True)
+    last_name = models.CharField(max_length=100,blank=True,null=True)
+
+    # Company Fields
+    client_name = models.CharField(max_length=255,blank=True,null=True)
+    company_name = models.CharField(max_length=255,blank=True,null=True)
+    siren_siret = models.CharField(max_length=100,blank=True,null=True)
+    vat_number = models.CharField(max_length=100,blank=True,null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        if self.client_type == "independent":
+            return f"{self.first_name} {self.last_name}"
+        return self.company_name or self.email
