@@ -156,7 +156,7 @@ class StripeWebhookView(views.APIView):
                 user_sub.stripe_subscription_id = subscription_id
                 user_sub.plan_id = plan_id
                 
-                # Robust date handling with fallback to timezone.now()
+                # Robust date handling with fallback
                 start_ts = sub_dict.get('current_period_start')
                 end_ts = sub_dict.get('current_period_end')
 
@@ -167,6 +167,9 @@ class StripeWebhookView(views.APIView):
 
                 if end_ts:
                     user_sub.end_date = timezone.datetime.fromtimestamp(end_ts, tz=timezone.get_current_timezone())
+                else:
+                    # Fallback: Set end_date to 30 days after start_date
+                    user_sub.end_date = user_sub.start_date + timezone.timedelta(days=30)
                 
                 user_sub.status = 'ACTIVE'
                 user_sub.save()
