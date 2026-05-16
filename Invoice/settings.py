@@ -154,3 +154,11 @@ STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET',)
 
 
 SETUP_FEE_AMOUNT = 750 # BDT
+
+
+
+# LANGUAGE_CODE = "fr"
+
+# LANGUAGES = [
+#     ("fr", "French"),
+# ]
