@@ -136,7 +136,6 @@ class Supplier(models.Model):
     
     
 # Invoice Section
-
 class Invoice(models.Model):
     TYPE_CHOICES = (
         ("vente", "Vente"),
