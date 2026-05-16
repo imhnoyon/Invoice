@@ -278,7 +278,10 @@ class InvoiceListCreateView(APIView):
                 Q(client__first_name__icontains=search) |
                 Q(client__last_name__icontains=search) |
                 Q(client__company_name__icontains=search) |
-                Q(supplier__name__icontains=search)
+                Q(supplier__first_name__icontains=search) |
+                Q(supplier__last_name__icontains=search) |
+                Q(supplier__company_name__icontains=search) |
+                Q(supplier__email__icontains=search)
             )
 
         # Status filter: ?status=brouillon
@@ -325,14 +328,14 @@ class InvoiceDetailView(APIView):
 
     def get_invoice(self, pk, request):
         try:
-            return Invoice.objects.get(pk=pk, company=request.user.company)
+            return Invoice.objects.get(pk=pk, company=request.user)
         except Invoice.DoesNotExist:
             return None
 
     def get(self, request, pk):
         invoice = self.get_invoice(pk, request)
         if not invoice:
-            return Response({"detail": "Facture introuvable."}, status=404)
+            return Response({"detail": "Invoice not found."}, status=404)
         return Response(
             InvoiceCreateSerializer(invoice, context={"request": request}).data
         )
@@ -340,10 +343,10 @@ class InvoiceDetailView(APIView):
     def patch(self, request, pk):
         invoice = self.get_invoice(pk, request)
         if not invoice:
-            return Response({"detail": "Facture introuvable."}, status=404)
+            return Response({"detail": "Invoice not found."}, status=404)
         if invoice.is_frozen:
             return Response(
-                {"detail": "Cette facture est verrouillée."},
+                {"detail": "This invoice is locked."},
                 status=status.HTTP_403_FORBIDDEN
             )
 
@@ -360,10 +363,10 @@ class InvoiceDetailView(APIView):
     def delete(self, request, pk):
         invoice = self.get_invoice(pk, request)
         if not invoice:
-            return Response({"detail": "Facture introuvable."}, status=404)
+            return Response({"detail": "Invoice not found."}, status=404)
         if invoice.is_frozen:
             return Response(
-                {"detail": "Une facture verrouillée ne peut pas être supprimée."},
+                {"detail": "A locked invoice cannot be deleted."},
                 status=status.HTTP_403_FORBIDDEN
             )
 
@@ -394,20 +397,20 @@ class InvoiceTVAToggleView(APIView):
 
     def patch(self, request, pk):
         try:
-            invoice = Invoice.objects.get(pk=pk, company=request.user.company)
+            invoice = Invoice.objects.get(pk=pk, company=request.user)
         except Invoice.DoesNotExist:
-            return Response({"detail": "Facture introuvable."}, status=404)
+            return Response({"detail": "Invoice not found."}, status=404)
 
         if invoice.is_frozen:
             return Response(
-                {"detail": "Cette facture est verrouillée."},
+                {"detail": "This invoice is locked."},
                 status=status.HTTP_403_FORBIDDEN
             )
 
         apply_tva = request.data.get("apply_tva")
         if apply_tva is None:
             return Response(
-                {"detail": "Le champ apply_tva est requis."},
+                {"detail": "The apply_tva field is required."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -451,29 +454,29 @@ class InvoiceConfirmView(APIView):
 
     def post(self, request, pk):
         try:
-            invoice = Invoice.objects.get(pk=pk, company=request.user.company)
+            invoice = Invoice.objects.get(pk=pk, company=request.user)
         except Invoice.DoesNotExist:
-            return Response({"detail": "Facture introuvable."}, status=404)
+            return Response({"detail": "Invoice not found."}, status=404)
 
         if invoice.is_frozen:
-            return Response({"detail": "Facture déjà verrouillée."}, status=403)
+            return Response({"detail": "Invoice is already locked."}, status=403)
 
         if invoice.status != "brouillon":
             return Response(
-                {"detail": f"Statut actuel : {invoice.status}. Impossible de confirmer."},
+                {"detail": f"Current status: {invoice.status}. Cannot confirm."},
                 status=400
             )
 
         # Required fields check
         errors = {}
         if not invoice.client and invoice.invoice_type == "vente":
-            errors["client"] = "Le nom du client est requis."
+            errors["client"] = "A client name is required."
         if not invoice.due_date:
-            errors["due_date"] = "La date d'échéance est requise."
+            errors["due_date"] = "The due date is required."
         if not invoice.service_date:
-            errors["service_date"] = "La date de vente est requise."
+            errors["service_date"] = "The service date is required."
         if not invoice.lines.exists():
-            errors["lines"] = "Au moins une ligne d'article est requise."
+            errors["lines"] = "At least one line item is required."
 
         if errors:
             return Response(errors, status=400)
@@ -482,7 +485,7 @@ class InvoiceConfirmView(APIView):
         invoice.save(update_fields=["status"])
 
         return Response({
-            "detail":  "Facture confirmée et envoyée.",
+            "detail":  "Invoice confirmed and sent.",
             "status":  invoice.status,
             "invoice": InvoiceCreateSerializer(invoice, context={"request": request}).data,
         })

@@ -185,8 +185,8 @@ class Invoice(models.Model):
     supplier = models.ForeignKey(Supplier, null=True, blank=True, on_delete=models.SET_NULL, related_name="invoices")
 
     # Identity
-    invoice_number     = models.CharField(max_length=50)       # accounting doc number, unique per company
-    accounting_number  = models.PositiveIntegerField(null=True) # sequential: 1,2,3… per company
+    invoice_number     = models.CharField(max_length=50)      
+    accounting_number  = models.PositiveIntegerField(null=True) 
     invoice_type       = models.CharField(max_length=20, choices=TYPE_CHOICES)
     invoice_subtype    = models.CharField(max_length=20, choices=SUBTYPE_CHOICES, default="facture")
     original_invoice   = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL, related_name="avoirs")
@@ -195,7 +195,7 @@ class Invoice(models.Model):
     invoice_date  = models.DateField()
     due_date      = models.DateField(null=True, blank=True)
     service_date  = models.DateField(null=True, blank=True)
-    accounting_month = models.CharField(max_length=7, blank=True)  # "2024-12"
+    accounting_month = models.CharField(max_length=7, blank=True) 
 
     # Payment
     payment_method     = models.CharField(max_length=50, choices=PAYMENT_METHOD_CHOICES, blank=True)

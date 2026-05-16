@@ -124,18 +124,18 @@ class InvoiceLineSerializer(serializers.ModelSerializer):
 
     def validate_quantity(self, value):
         if value <= 0:
-            raise serializers.ValidationError("Quantité doit être supérieure à 0.")
+            raise serializers.ValidationError("Quantity must be greater than 0.")
         return value
 
     def validate_unit_price_ht(self, value):
         if value < 0:
-            raise serializers.ValidationError("Le prix unitaire ne peut pas être négatif.")
+            raise serializers.ValidationError("The unit price cannot be negative.")
         return value
 
     def validate_tva_rate(self, value):
         allowed = [0, 2.1, 5.5, 8.5, 10, 17, 20, 21]
         if float(value) not in allowed:
-            raise serializers.ValidationError(f"Taux TVA invalide. Choisissez parmi : {allowed}")
+            raise serializers.ValidationError(f"Invalid VAT rate. Choose from: {allowed}")
         return value
 
 
@@ -152,6 +152,7 @@ class InvoiceCreateSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "client",
+            "supplier",
             "invoice_number", "invoice_type", "invoice_subtype",
             "invoice_date", "due_date", "service_date",
             "payment_method", "payment_conditions",
@@ -177,18 +178,18 @@ class InvoiceCreateSerializer(serializers.ModelSerializer):
         # vente → client required
         if invoice_type == "vente" and not client:
             raise serializers.ValidationError(
-                {"client": "Le nom du client est requis pour une vente."}
+                {"client": "A client is required for a sales invoice."}
             )
         # achat → supplier required
         if invoice_type == "achat" and not supplier:
             raise serializers.ValidationError(
-                {"supplier": "Le fournisseur est requis pour un achat."}
+                {"supplier": "A supplier is required for a purchase invoice."}
             )
 
         lines = attrs.get("lines", [])
         if not lines:
             raise serializers.ValidationError(
-                {"lines": "Au moins une ligne d'article est requise."}
+                {"lines": "At least one line item is required."}
             )
 
         # TVA OFF হলে tva_rate থাকলেও warn করবো না, শুধু 0 করবো
@@ -199,15 +200,24 @@ class InvoiceCreateSerializer(serializers.ModelSerializer):
         return attrs
 
     def validate_client(self, client):
-        """Client অবশ্যই এই company-র হতে হবে।"""
+        """Client must belong to the authenticated user."""
         request = self.context.get("request")
         if client and request:
-            company = request.user.company
-            if client.company != company:
+            if client.user != request.user:
                 raise serializers.ValidationError(
-                    "Ce client n'appartient pas à votre entreprise."
+                    "This client does not belong to your account."
                 )
         return client
+
+    def validate_supplier(self, supplier):
+        """Supplier must belong to the authenticated user."""
+        request = self.context.get("request")
+        if supplier and request:
+            if supplier.user != request.user:
+                raise serializers.ValidationError(
+                    "This supplier does not belong to your account."
+                )
+        return supplier
 
     def validate_due_date(self, value):
         invoice_date = self.initial_data.get("invoice_date")
@@ -215,7 +225,7 @@ class InvoiceCreateSerializer(serializers.ModelSerializer):
             from datetime import date
             if str(value) < str(invoice_date):
                 raise serializers.ValidationError(
-                    "La date d'échéance ne peut pas être antérieure à la date de facture."
+                    "The due date cannot be earlier than the invoice date."
                 )
         return value
 
@@ -253,7 +263,7 @@ class InvoiceCreateSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         if instance.is_frozen:
             raise serializers.ValidationError(
-                "Cette facture est verrouillée et ne peut plus être modifiée."
+                "This invoice is locked and can no longer be modified."
             )
 
         lines_data = validated_data.pop("lines", None)
@@ -291,11 +301,13 @@ class InvoiceListSerializer(serializers.ModelSerializer):
 
     def get_client_name(self, obj):
         if obj.client:
-            if obj.client.client_type == "independent":
+            if obj.client.client_type == "Indépendant":
                 return f"{obj.client.first_name} {obj.client.last_name}"
             return obj.client.company_name or ""
         if obj.supplier:
-            return obj.supplier.name
+            if obj.supplier.client_type == "Indépendant":
+                return f"{obj.supplier.first_name} {obj.supplier.last_name}"
+            return obj.supplier.company_name or ""
         return ""
 
     def get_payment_percent(self, obj):
