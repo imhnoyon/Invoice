@@ -290,7 +290,7 @@ class InvoiceListCreateView(APIView):
             qs = qs.filter(status=inv_status)
 
         serializer = InvoiceListSerializer(qs, many=True)
-        return Response({
+        return APIResponse.success(message="Invoices retrieved.", data={
             "count":   qs.count(),
             "results": serializer.data,
         })
@@ -310,12 +310,8 @@ class InvoiceListCreateView(APIView):
         )
         if serializer.is_valid():
             invoice = serializer.save(company=company)
-            return Response(
-                InvoiceCreateSerializer(invoice, context={"request": request}).data,
-                status=status.HTTP_201_CREATED
-            )
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
+            return APIResponse.success(message="Invoice created.", data=InvoiceCreateSerializer(invoice, context={"request": request}).data)
+        return APIResponse.error(message="Invalid data.", errors=serializer.errors)
 
 class InvoiceDetailView(APIView):
     """
@@ -335,20 +331,15 @@ class InvoiceDetailView(APIView):
     def get(self, request, pk):
         invoice = self.get_invoice(pk, request)
         if not invoice:
-            return Response({"detail": "Invoice not found."}, status=404)
-        return Response(
-            InvoiceCreateSerializer(invoice, context={"request": request}).data
-        )
+            return APIResponse.error(message="Invoice not found.", status=404)
+        return APIResponse.success(message="Invoice retrieved.", data=InvoiceCreateSerializer(invoice, context={"request": request}).data)
 
     def patch(self, request, pk):
         invoice = self.get_invoice(pk, request)
         if not invoice:
-            return Response({"detail": "Invoice not found."}, status=404)
+            return APIResponse.error(message="Invoice not found.", status=404)
         if invoice.is_frozen:
-            return Response(
-                {"detail": "This invoice is locked."},
-                status=status.HTTP_403_FORBIDDEN
-            )
+            return APIResponse.error(message="This invoice is locked.", status=status.HTTP_403_FORBIDDEN)
 
         serializer = InvoiceCreateSerializer(
             invoice, data=request.data,
@@ -357,18 +348,15 @@ class InvoiceDetailView(APIView):
         )
         if serializer.is_valid():
             serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return APIResponse.success(message="Invoice updated.", data=serializer.data)
+        return APIResponse.error(message="Invalid data.", errors=serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, pk):
         invoice = self.get_invoice(pk, request)
         if not invoice:
-            return Response({"detail": "Invoice not found."}, status=404)
+            return APIResponse.error(message="Invoice not found.", status=404)
         if invoice.is_frozen:
-            return Response(
-                {"detail": "A locked invoice cannot be deleted."},
-                status=status.HTTP_403_FORBIDDEN
-            )
+            return APIResponse.error(message="A locked invoice cannot be deleted.", status=status.HTTP_403_FORBIDDEN)
 
         company        = invoice.company
         deleted_number = invoice.accounting_number
@@ -383,7 +371,7 @@ class InvoiceDetailView(APIView):
             accounting_number=models.F("accounting_number") - 1
         )
 
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        return APIResponse.success(message="Invoice deleted.", status=status.HTTP_204_NO_CONTENT)
 
 
 class InvoiceTVAToggleView(APIView):
@@ -399,20 +387,15 @@ class InvoiceTVAToggleView(APIView):
         try:
             invoice = Invoice.objects.get(pk=pk, company=request.user)
         except Invoice.DoesNotExist:
-            return Response({"detail": "Invoice not found."}, status=404)
+            return APIResponse.error(message="Invoice not found.", status=404)
 
         if invoice.is_frozen:
-            return Response(
-                {"detail": "This invoice is locked."},
-                status=status.HTTP_403_FORBIDDEN
-            )
+            return APIResponse.error(message="This invoice is locked.", status=status.HTTP_403_FORBIDDEN)
 
         apply_tva = request.data.get("apply_tva")
         if apply_tva is None:
-            return Response(
-                {"detail": "The apply_tva field is required."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return APIResponse.error(message="The apply_tva field is required.", status=status.HTTP_400_BAD_REQUEST)
+               
 
         invoice.apply_tva = apply_tva
         invoice.save(update_fields=["apply_tva"])
@@ -456,16 +439,13 @@ class InvoiceConfirmView(APIView):
         try:
             invoice = Invoice.objects.get(pk=pk, company=request.user)
         except Invoice.DoesNotExist:
-            return Response({"detail": "Invoice not found."}, status=404)
+            return APIResponse.error(message="Invoice not found.", status=404)
 
         if invoice.is_frozen:
-            return Response({"detail": "Invoice is already locked."}, status=403)
+            return APIResponse.error(message="Invoice is already locked.", status=status.HTTP_403_FORBIDDEN)
 
         if invoice.status != "brouillon":
-            return Response(
-                {"detail": f"Current status: {invoice.status}. Cannot confirm."},
-                status=400
-            )
+            return APIResponse.error(message=f"Current status: {invoice.status}. Cannot confirm.", status=status.HTTP_400_BAD_REQUEST)
 
         # Required fields check
         errors = {}
@@ -479,12 +459,12 @@ class InvoiceConfirmView(APIView):
             errors["lines"] = "At least one line item is required."
 
         if errors:
-            return Response(errors, status=400)
+            return APIResponse.error(message=errors, status=status.HTTP_400_BAD_REQUEST)
 
         invoice.status = "a_traiter"
         invoice.save(update_fields=["status"])
 
-        return Response({
+        return APIResponse.success(message="Invoice confirmed and sent.", data={
             "detail":  "Invoice confirmed and sent.",
             "status":  invoice.status,
             "invoice": InvoiceCreateSerializer(invoice, context={"request": request}).data,

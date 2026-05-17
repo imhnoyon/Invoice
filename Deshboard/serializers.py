@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import Client, Supplier
+from decimal import Decimal
 
 
 class IndependentClientSerializer(serializers.ModelSerializer):
@@ -133,9 +134,28 @@ class InvoiceLineSerializer(serializers.ModelSerializer):
         return value
 
     def validate_tva_rate(self, value):
-        allowed = [0, 2.1, 5.5, 8.5, 10, 17, 20, 21]
-        if float(value) not in allowed:
-            raise serializers.ValidationError(f"Invalid VAT rate. Choose from: {allowed}")
+        # Accept any percentage between 1 and 100 when TVA is applied.
+        # If the parent invoice has apply_tva=False and value == 0, allow 0.
+        try:
+            dec = Decimal(str(value))
+        except Exception:
+            raise serializers.ValidationError("Invalid number for tva_rate.")
+
+        # Check if apply_tva was explicitly disabled in the invoice payload
+        apply_tva_flag = None
+        try:
+            # parent -> ListSerializer -> parent (InvoiceCreateSerializer)
+            invoice_initial = getattr(self.parent, 'parent', None)
+            if invoice_initial is not None and hasattr(invoice_initial, 'initial_data'):
+                apply_tva_flag = invoice_initial.initial_data.get('apply_tva')
+        except Exception:
+            apply_tva_flag = None
+
+        if apply_tva_flag is False and dec == Decimal("0"):
+            return value
+
+        if dec < Decimal("1") or dec > Decimal("100"):
+            raise serializers.ValidationError("tva_rate must be between 1 and 100 when TVA is applied.")
         return value
 
 
@@ -248,9 +268,6 @@ class InvoiceCreateSerializer(serializers.ModelSerializer):
         # Lines save
         for line_data in lines_data:
             line = InvoiceLine(invoice=invoice, **line_data)
-            # apply_tva=False হলে tva force 0
-            if not invoice.apply_tva:
-                line.tva_rate = 0
             line.save()  # auto compute total_ht/tva/ttc
 
         # Invoice totals
@@ -275,8 +292,6 @@ class InvoiceCreateSerializer(serializers.ModelSerializer):
             instance.lines.all().delete()
             for line_data in lines_data:
                 line = InvoiceLine(invoice=instance, **line_data)
-                if not instance.apply_tva:
-                    line.tva_rate = 0
                 line.save()
 
         instance.compute_totals()
@@ -292,13 +307,20 @@ class InvoiceListSerializer(serializers.ModelSerializer):
     class Meta:
         model  = Invoice
         fields = [
-            "id", "invoice_number", "invoice_type", "invoice_subtype",
-            "client_name", "client_category",
-            "invoice_date", "status", "is_frozen",
-            "total_ht", "total_tva", "total_ttc",
-            "amount_paid", "payment_percent",
+            "id",
+            "client",
+            "client_name",
+            "supplier",
+            "invoice_number", "invoice_type", "invoice_subtype",
+            "invoice_date", "due_date", "service_date",
+            "payment_method", "payment_conditions",
+            "currency", "status", "client_category",
+            "apply_tva",
+            "attachment",
+            "total_ht", "total_tva", "total_ttc", "amount_paid",
+            "payment_percent",
+            "created_at", "updated_at",
         ]
-
     def get_client_name(self, obj):
         if obj.client:
             if obj.client.client_type == "Indépendant":
@@ -314,3 +336,6 @@ class InvoiceListSerializer(serializers.ModelSerializer):
         if obj.total_ttc and obj.total_ttc > 0:
             return round((obj.amount_paid / obj.total_ttc) * 100)
         return 0
+    
+    
+    

@@ -1,4 +1,7 @@
+from decimal import Decimal
+
 from django.db import models
+from django.core.validators import MinValueValidator, MaxValueValidator
 from Authentication.models import User
 from django_countries.fields import CountryField
 
@@ -234,8 +237,11 @@ class Invoice(models.Model):
 
     def compute_totals(self):
         lines = self.lines.all()
-        self.total_ht  = sum(l.total_ht  for l in lines)
-        self.total_tva = sum(l.total_tva for l in lines)
+        self.total_ht = sum(l.total_ht for l in lines)
+        if self.apply_tva:
+            self.total_tva = sum(l.total_tva for l in lines)
+        else:
+            self.total_tva = 0
         self.total_ttc = self.total_ht + self.total_tva
 
     def set_accounting_month(self):
@@ -254,11 +260,17 @@ class Invoice(models.Model):
 # 7. INVOICE LINE
 # ─────────────────────────────────────────
 class InvoiceLine(models.Model):
+    
     invoice        = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name="lines")
     description    = models.CharField(max_length=500)
     quantity       = models.DecimalField(max_digits=10, decimal_places=2, default=1)
     unit_price_ht  = models.DecimalField(max_digits=12, decimal_places=2)
-    tva_rate       = models.DecimalField(max_digits=5,  decimal_places=2, default=0)
+    tva_rate       = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal("0"),
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+    )
 
     # Computed
     total_ht  = models.DecimalField(max_digits=12, decimal_places=2, default=0)
@@ -266,8 +278,10 @@ class InvoiceLine(models.Model):
     total_ttc = models.DecimalField(max_digits=12, decimal_places=2, default=0)
 
     def save(self, *args, **kwargs):
+        if not self.invoice.apply_tva:
+            self.tva_rate = Decimal("0")
         self.total_ht  = self.quantity * self.unit_price_ht
-        self.total_tva = self.total_ht * (self.tva_rate / 100)
+        self.total_tva = self.total_ht * (self.tva_rate / Decimal("100"))
         self.total_ttc = self.total_ht + self.total_tva
         super().save(*args, **kwargs)
 
