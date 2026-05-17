@@ -18,4 +18,9 @@ urlpatterns = [
     path("invoices/<int:pk>/",               InvoiceDetailView.as_view(),     name="invoice-detail"),
     path("invoices/<int:pk>/toggle-tva/",    InvoiceTVAToggleView.as_view(),  name="invoice-toggle-tva"),
     path("invoices/<int:pk>/confirm/",       InvoiceConfirmView.as_view(),    name="invoice-confirm"),
+    
+    
+    # invoices short list URLs
+    path("invoices/short-list/", InvoiceShortListView.as_view(), name="short-invoice-list"),
+    path("invoices/details/<int:pk>/", InvoiceDetailsSerializers.as_view(), name="short-invoice-detail"),
 ]

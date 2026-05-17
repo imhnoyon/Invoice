@@ -301,7 +301,7 @@ class InvoiceCreateSerializer(serializers.ModelSerializer):
 
 class InvoiceListSerializer(serializers.ModelSerializer):
     """Lightweight — list table-এর জন্য।"""
-    client_name     = serializers.SerializerMethodField()
+    clientSupplier_name     = serializers.SerializerMethodField()
     payment_percent = serializers.SerializerMethodField()
 
     class Meta:
@@ -309,7 +309,7 @@ class InvoiceListSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "client",
-            "client_name",
+            "clientSupplier_name",
             "supplier",
             "invoice_number", "invoice_type", "invoice_subtype",
             "invoice_date", "due_date", "service_date",
@@ -321,7 +321,7 @@ class InvoiceListSerializer(serializers.ModelSerializer):
             "payment_percent",
             "created_at", "updated_at",
         ]
-    def get_client_name(self, obj):
+    def get_clientSupplier_name(self, obj):
         if obj.client:
             if obj.client.client_type == "Indépendant":
                 return f"{obj.client.first_name} {obj.client.last_name}"
@@ -338,4 +338,22 @@ class InvoiceListSerializer(serializers.ModelSerializer):
         return 0
     
     
+    
+class InvoiceShortListSerializer(serializers.ModelSerializer):
+    """Short list for dropdowns, etc."""
+    ClientSupplierName = serializers.SerializerMethodField()
+    class Meta:
+        model  = Invoice
+        fields = ["id", "invoice_number", "invoice_number", "ClientSupplierName"]
+        
+    def get_ClientSupplierName(self, obj):
+        if obj.client:
+            if obj.client.client_type == "Indépendant":
+                return f"{obj.client.first_name} {obj.client.last_name}"
+            return obj.client.company_name or ""
+        if obj.supplier:
+            if obj.supplier.client_type == "Indépendant":
+                return f"{obj.supplier.first_name} {obj.supplier.last_name}"
+            return obj.supplier.company_name or ""
+        return ""
     

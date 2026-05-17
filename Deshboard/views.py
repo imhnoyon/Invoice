@@ -18,6 +18,7 @@ from .serializers import (
     SupplierSerializer,
     InvoiceCreateSerializer,
     InvoiceListSerializer,
+    InvoiceShortListSerializer,
 )
 
 CLIENT_SERIALIZER_MAP = {
@@ -465,3 +466,29 @@ class InvoiceConfirmView(APIView):
             "status":  invoice.status,
             "invoice": InvoiceCreateSerializer(invoice, context={"request": request}).data,
         })
+        
+        
+class InvoiceShortListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        invoices = Invoice.objects.filter(company=request.user).order_by("-id")
+        serializer = InvoiceShortListSerializer(invoices,many=True)
+        return APIResponse.success(
+            message="Invoice list retrieved successfully.",
+            data=serializer.data
+        )
+        
+        
+        
+class InvoiceDetailsSerializers(APIView):
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, pk):
+        try:
+            invoice = Invoice.objects.get(pk=pk, company=request.user)
+        except Invoice.DoesNotExist:
+            return APIResponse.error(message="Invoice not found.", status=404)
+        
+        serializer = InvoiceListSerializer(invoice, context={"request": request})
+        return APIResponse.success(message="Invoice details retrieved successfully.", data=serializer.data)
