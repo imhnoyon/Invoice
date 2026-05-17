@@ -7,6 +7,7 @@ from utils.paginations import CustomPagination
 from utils.api_response import APIResponse
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.db.models import Q, Max
+from decimal import Decimal
 
 from .models import Client, Invoice, Supplier
 from .serializers import (
@@ -473,7 +474,13 @@ class InvoiceShortListView(APIView):
 
     def get(self, request):
         invoices = Invoice.objects.filter(company=request.user).order_by("-id")
-        serializer = InvoiceShortListSerializer(invoices,many=True)
+        # Ensure computed totals reflect current line values (do not persist)
+        for inv in invoices:
+            try:
+                inv.compute_totals()
+            except Exception:
+                pass
+        serializer = InvoiceShortListSerializer(invoices, many=True)
         return APIResponse.success(
             message="Invoice list retrieved successfully.",
             data=serializer.data
@@ -489,6 +496,75 @@ class InvoiceDetailsSerializers(APIView):
             invoice = Invoice.objects.get(pk=pk, company=request.user)
         except Invoice.DoesNotExist:
             return APIResponse.error(message="Invoice not found.", status=404)
-        
+        # Ensure totals reflect current line values (do not persist)
+        try:
+            invoice.compute_totals()
+        except Exception:
+            pass
+
         serializer = InvoiceListSerializer(invoice, context={"request": request})
         return APIResponse.success(message="Invoice details retrieved successfully.", data=serializer.data)
+    
+    def patch(self, request, pk):
+        try:
+            invoice = Invoice.objects.get(pk=pk, company=request.user)
+        except Invoice.DoesNotExist:
+            return APIResponse.error(message="Invoice not found.", status=404)
+
+        if invoice.is_frozen:
+            return APIResponse.error(message="This invoice is locked.", status=status.HTTP_403_FORBIDDEN)
+        data = request.data or {}
+
+        # If client sent `lines`, treat them as adjustment amounts (do NOT overwrite original invoice prices)
+        if isinstance(data, dict) and data.get("lines"):
+            lines = data.get("lines") or []
+            adjustment_total = Decimal("0")
+            try:
+                for l in lines:
+                    qty = Decimal(str(l.get("quantity", 0)))
+                    unit = Decimal(str(l.get("unit_price_ht", 0)))
+                    line_ht = qty * unit
+                    if invoice.apply_tva:
+                        tva_rate = Decimal(str(l.get("tva_rate", 0)))
+                        line_tva = line_ht * (tva_rate / Decimal("100"))
+                    else:
+                        line_tva = Decimal("0")
+                    line_total = line_ht + line_tva
+                    adjustment_total += line_total
+            except Exception as e:
+                return APIResponse.error(message="Invalid line values.", errors={"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+            # previous remaining balance
+            prev_remaining = invoice.total_ttc - invoice.amount_paid
+            new_remaining = prev_remaining - adjustment_total
+
+            # Update amount_paid so remaining decreases by adjustment_total
+            invoice.amount_paid = invoice.amount_paid + adjustment_total
+            invoice.save(update_fields=["amount_paid"])
+
+            out = InvoiceListSerializer(invoice, context={"request": request})
+            return APIResponse.success(message="Invoice adjusted and remaining balance updated.", data={
+                "invoice": out.data,
+                "adjustment_total": float(adjustment_total),
+                "previous_remaining": float(prev_remaining),
+                "new_remaining": float(new_remaining),
+            })
+
+        # Fallback: reuse existing create/update serializer logic to validate and persist full invoice updates
+        serializer = InvoiceCreateSerializer(
+            invoice, data=request.data, partial=True, context={"request": request}
+        )
+
+        if serializer.is_valid():
+            invoice = serializer.save()
+            # Ensure totals are up-to-date (serializer.save already computes totals)
+            try:
+                invoice.compute_totals()
+                invoice.save(update_fields=["total_ht", "total_tva", "total_ttc"])
+            except Exception:
+                pass
+
+            out = InvoiceListSerializer(invoice, context={"request": request})
+            return APIResponse.success(message="Invoice updated and recalculated.", data=out.data)
+
+        return APIResponse.error(message="Invalid data.", errors=serializer.errors, status=status.HTTP_400_BAD_REQUEST)

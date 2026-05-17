@@ -303,6 +303,7 @@ class InvoiceListSerializer(serializers.ModelSerializer):
     """Lightweight — list table-এর জন্য।"""
     clientSupplier_name     = serializers.SerializerMethodField()
     payment_percent = serializers.SerializerMethodField()
+    remaining_balance = serializers.SerializerMethodField()
 
     class Meta:
         model  = Invoice
@@ -319,6 +320,7 @@ class InvoiceListSerializer(serializers.ModelSerializer):
             "attachment",
             "total_ht", "total_tva", "total_ttc", "amount_paid",
             "payment_percent",
+            "remaining_balance",
             "created_at", "updated_at",
         ]
     def get_clientSupplier_name(self, obj):
@@ -336,15 +338,24 @@ class InvoiceListSerializer(serializers.ModelSerializer):
         if obj.total_ttc and obj.total_ttc > 0:
             return round((obj.amount_paid / obj.total_ttc) * 100)
         return 0
+    def get_remaining_balance(self, obj):
+        try:
+            return obj.total_ttc - obj.amount_paid
+        except Exception:
+            return None
     
     
     
 class InvoiceShortListSerializer(serializers.ModelSerializer):
     """Short list for dropdowns, etc."""
     ClientSupplierName = serializers.SerializerMethodField()
+    total_ht = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    total_tva = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    total_ttc = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+
     class Meta:
         model  = Invoice
-        fields = ["id", "invoice_number", "invoice_number", "ClientSupplierName"]
+        fields = ["id", "invoice_number", "ClientSupplierName", "total_ht", "total_tva", "total_ttc"]
         
     def get_ClientSupplierName(self, obj):
         if obj.client:
