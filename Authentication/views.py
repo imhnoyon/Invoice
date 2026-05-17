@@ -55,6 +55,7 @@ class LoginView(APIView):
             data={
                 "access": str(refresh.access_token),
                 "refresh": str(refresh),
+                "role": user.role,
             }
         )
         

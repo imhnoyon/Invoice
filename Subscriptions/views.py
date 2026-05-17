@@ -173,6 +173,14 @@ class StripeWebhookView(views.APIView):
                 
                 user_sub.status = 'ACTIVE'
                 user_sub.save()
+                # grant pro role to user when subscription becomes active
+                try:
+                    if user_sub.plan and hasattr(user_sub, 'user'):
+                        user = user_sub.user
+                        user.role = 'pro_user'
+                        user.save(update_fields=['role'])
+                except Exception as e:
+                    print(f"Error assigning pro role: {e}")
                 print(f"Successfully updated subscription for user {user_id}")
             except Exception as e:
                 print(f"Error saving subscription in checkout: {str(e)}")
@@ -208,6 +216,14 @@ class StripeWebhookView(views.APIView):
             user_sub.start_date = timezone.datetime.fromtimestamp(subscription['current_period_start'])
             user_sub.end_date = timezone.datetime.fromtimestamp(subscription['current_period_end'])
             user_sub.save()
+            # If subscription is active, ensure user gets pro role
+            try:
+                if user_sub.status == 'ACTIVE' and user_sub.plan and hasattr(user_sub, 'user'):
+                    user = user_sub.user
+                    user.role = 'pro_user'
+                    user.save(update_fields=['role'])
+            except Exception as e:
+                print(f"Error assigning pro role on update: {e}")
 
     def handle_subscription_deleted(self, subscription):
         stripe_subscription_id = subscription['id']
@@ -249,6 +265,14 @@ class StripeWebhookView(views.APIView):
             )
             user_sub.status = 'ACTIVE'
             user_sub.save()
+            # assign pro role on successful invoice payment
+            try:
+                if user_sub.plan and hasattr(user_sub, 'user'):
+                    user = user_sub.user
+                    user.role = 'pro_user'
+                    user.save(update_fields=['role'])
+            except Exception as e:
+                print(f"Error assigning pro role on invoice payment: {e}")
 
     def handle_invoice_payment_failed(self, invoice):
         customer_id = invoice['customer']
