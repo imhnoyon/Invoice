@@ -232,10 +232,6 @@ class SupplierDetailView(APIView):
     
 # The Invoice views would be implemented similarly, with appropriate adjustments for the Invoice model and serializers.
 
-# views.py
-
-
-
 class InvoiceListCreateView(APIView):
     """
     GET  /invoices/   → list (filter by tab/search)

@@ -72,7 +72,7 @@ class CreateCheckoutSessionView(views.APIView):
                         "plan_id": str(plan.id),
                     }
                 },
-                "success_url": "http://localhost:3000/success?session_id={CHECKOUT_SESSION_ID}",
+                "success_url": "http://10.10.12.59:5173/dashboard",
                 "cancel_url": "http://localhost:3000/cancel",
                 "metadata": {
                     "user_id": str(user.id),

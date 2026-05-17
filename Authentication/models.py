@@ -28,6 +28,12 @@ class UserManager(BaseUserManager):
         
         
 class User(AbstractUser):
+    USER_TYPE_CHOICES = (
+        ("admin", "Admin"),
+        ("user", "User"),
+        ("pro_user", "Pro_user"),
+    )
+    role = models.CharField(max_length=20, choices=USER_TYPE_CHOICES, default="user")
     full_name = models.CharField(max_length=255)
     email = models.EmailField(unique=True)
     company_name = models.CharField(max_length=255)
@@ -43,3 +49,9 @@ class User(AbstractUser):
 
     def __str__(self):
         return self.email
+    
+    def save(self, *args, **kwargs):
+        if self.is_superuser:
+            self.role = 'admin'
+        super().save(*args, **kwargs)
+        
