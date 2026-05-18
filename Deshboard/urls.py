@@ -23,4 +23,7 @@ urlpatterns = [
     # invoices short list URLs
     path("invoices/short-list/", InvoiceShortListView.as_view(), name="short-invoice-list"),
     path("invoices/details/<int:pk>/", InvoiceDetailsSerializers.as_view(), name="short-invoice-detail"),
+
+    # dashboard overview
+    path("dashboard/overview/", DashboardOverviewView.as_view(), name="dashboard-overview"),
 ]

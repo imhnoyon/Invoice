@@ -8,6 +8,10 @@ from utils.api_response import APIResponse
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.db.models import Q, Max
 from decimal import Decimal
+from django.db.models import Sum, F, Value, DecimalField, ExpressionWrapper
+from django.db.models.functions import Coalesce, TruncMonth
+from django.utils import timezone
+from dateutil.relativedelta import relativedelta
 
 from .models import Client, Invoice, Supplier
 from .serializers import (
@@ -568,3 +572,249 @@ class InvoiceDetailsSerializers(APIView):
             return APIResponse.success(message="Invoice updated and recalculated.", data=out.data)
 
         return APIResponse.error(message="Invalid data.", errors=serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class DashboardOverviewView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def _to_float(self, value):
+        if value is None:
+            return 0.0
+        return float(value)
+
+    def _sum_value(self, qs, field_name):
+        return qs.aggregate(total=Coalesce(Sum(field_name), Value(Decimal("0"), output_field=DecimalField(max_digits=14, decimal_places=2))))["total"]
+
+    def _remaining_expr(self):
+        return ExpressionWrapper(
+            F("total_ttc") - F("amount_paid"),
+            output_field=DecimalField(max_digits=14, decimal_places=2),
+        )
+
+    def _card_trend(self, current_value, previous_value):
+        current = Decimal(str(current_value or 0))
+        previous = Decimal(str(previous_value or 0))
+        if previous == 0:
+            if current == 0:
+                return 0.0
+            return 100.0
+        return float(((current - previous) / previous) * Decimal("100"))
+
+    def _effective_due_date(self, invoice):
+        """Use explicit due_date if present; otherwise derive it from payment_conditions."""
+        if invoice.due_date:
+            return invoice.due_date
+
+        payment_days = {
+            "immediate": 0,
+            "15_jours": 15,
+            "30_jours": 30,
+            "45_jours": 45,
+            "60_jours": 60,
+        }
+        days = payment_days.get(invoice.payment_conditions)
+        if days is None:
+            return invoice.invoice_date
+
+        return invoice.invoice_date + timezone.timedelta(days=days)
+
+    def get(self, request):
+        company = request.user
+        today = timezone.localdate()
+
+        month_start = today.replace(day=1)
+        prev_month_end = month_start - timezone.timedelta(days=1)
+        prev_month_start = prev_month_end.replace(day=1)
+
+        base_qs = Invoice.objects.filter(company=company)
+        sales_qs = base_qs.filter(invoice_type="vente", invoice_subtype="facture")
+        purchase_qs = base_qs.filter(invoice_type="achat", invoice_subtype="facture")
+
+        # Financial cards
+        current_revenue = self._sum_value(
+            sales_qs.filter(invoice_date__gte=month_start, invoice_date__lte=today),
+            "amount_paid",
+        )
+        prev_revenue = self._sum_value(
+            sales_qs.filter(invoice_date__gte=prev_month_start, invoice_date__lte=prev_month_end),
+            "amount_paid",
+        )
+
+        current_receivables = self._sum_value(
+            sales_qs.annotate(remaining=self._remaining_expr()).filter(remaining__gt=0),
+            "remaining",
+        )
+        prev_receivables = self._sum_value(
+            sales_qs.filter(invoice_date__gte=prev_month_start, invoice_date__lte=prev_month_end)
+            .annotate(remaining=self._remaining_expr())
+            .filter(remaining__gt=0),
+            "remaining",
+        )
+
+        current_debts = self._sum_value(
+            purchase_qs.annotate(remaining=self._remaining_expr()).filter(remaining__gt=0),
+            "remaining",
+        )
+        prev_debts = self._sum_value(
+            purchase_qs.filter(invoice_date__gte=prev_month_start, invoice_date__lte=prev_month_end)
+            .annotate(remaining=self._remaining_expr())
+            .filter(remaining__gt=0),
+            "remaining",
+        )
+
+        # Revenue / expense trend (last 7 months)
+        chart_start = month_start - relativedelta(months=6)
+        monthly_sales = (
+            sales_qs.filter(invoice_date__gte=chart_start)
+            .annotate(month=TruncMonth("invoice_date"))
+            .values("month")
+            .annotate(total=Coalesce(Sum("total_ttc"), Value(Decimal("0"), output_field=DecimalField(max_digits=14, decimal_places=2))))
+            .order_by("month")
+        )
+        monthly_expenses = (
+            purchase_qs.filter(invoice_date__gte=chart_start)
+            .annotate(month=TruncMonth("invoice_date"))
+            .values("month")
+            .annotate(total=Coalesce(Sum("total_ttc"), Value(Decimal("0"), output_field=DecimalField(max_digits=14, decimal_places=2))))
+            .order_by("month")
+        )
+
+        # TruncMonth on a DateField can return either date or datetime depending on backend.
+        # Normalize both safely into a date key.
+        sales_map = {
+            (item["month"].date() if hasattr(item["month"], "date") else item["month"]): item["total"]
+            for item in monthly_sales
+            if item.get("month")
+        }
+        expense_map = {
+            (item["month"].date() if hasattr(item["month"], "date") else item["month"]): item["total"]
+            for item in monthly_expenses
+            if item.get("month")
+        }
+
+        chart_points = []
+        for idx in range(7):
+            d = (chart_start + relativedelta(months=idx))
+            key = d
+            rev = sales_map.get(key, Decimal("0"))
+            exp = expense_map.get(key, Decimal("0"))
+            chart_points.append(
+                {
+                    "month": d.strftime("%b"),
+                    "revenue": self._to_float(rev),
+                    "expenses": self._to_float(exp),
+                }
+            )
+
+        # Top clients by billed sales amount
+        top_clients_qs = (
+            sales_qs.filter(client__isnull=False)
+            .values("client_id", "client__first_name", "client__last_name", "client__company_name", "client__email")
+            .annotate(total=Coalesce(Sum("total_ttc"), Value(Decimal("0"), output_field=DecimalField(max_digits=14, decimal_places=2))))
+            .order_by("-total")[:6]
+        )
+        top_clients = []
+        for row in top_clients_qs:
+            name = " ".join(
+                [v for v in [row.get("client__first_name"), row.get("client__last_name")] if v]
+            ).strip() or row.get("client__company_name") or "N/A"
+            top_clients.append(
+                {
+                    "client_id": row.get("client_id"),
+                    "name": name,
+                    "email": row.get("client__email") or "",
+                    "amount": self._to_float(row.get("total")),
+                }
+            )
+
+        # Reminders = overdue invoices that still have pending balance.
+        overdue_invoices = base_qs.select_related("client", "supplier").order_by("due_date", "-id")
+        reminders = []
+        for inv in overdue_invoices:
+            effective_due_date = self._effective_due_date(inv)
+            if not effective_due_date or effective_due_date > today:
+                continue
+
+            remaining_balance = Decimal(str(inv.total_ttc)) - Decimal(str(inv.amount_paid))
+            if remaining_balance <= 0:
+                continue
+
+            days_late = (today - effective_due_date).days
+            reminders.append(
+                {
+                    "invoice_id": inv.id,
+                    "invoice_number": inv.invoice_number,
+                    "status": inv.status,
+                    "due_date": effective_due_date,
+                    "days_overdue": days_late,
+                    "remaining_balance": self._to_float(remaining_balance),
+                    "payment_status": "pending",
+                }
+            )
+            if len(reminders) >= 5:
+                break
+
+        # Recent invoices table
+        recent_qs = base_qs.order_by("-invoice_date", "-id")[:6]
+        recent_invoices = []
+        for inv in recent_qs:
+            remaining = inv.total_ttc - inv.amount_paid
+            effective_due_date = self._effective_due_date(inv)
+            payment_status = "paid" if remaining <= 0 else ("overdue" if effective_due_date and effective_due_date < today else "pending")
+            recent_invoices.append(
+                {
+                    "id": inv.id,
+                    "invoice_number": inv.invoice_number,
+                    "date": inv.invoice_date,
+                    "due_date": effective_due_date,
+                    "amount": self._to_float(inv.total_ttc),
+                    "invoice_type": inv.invoice_type,
+                    "status": inv.status,
+                    "payment_status": payment_status,
+                    "remaining_balance": self._to_float(remaining),
+                }
+            )
+
+        total_sales = self._sum_value(sales_qs, "total_ttc")
+        total_expenses = self._sum_value(purchase_qs, "total_ttc")
+        net_result = total_sales - total_expenses
+
+        payload = {
+            "financial_overview": {
+                "revenue": {
+                    "value": self._to_float(current_revenue),
+                    "change_percent": self._card_trend(current_revenue, prev_revenue),
+                },
+                "unpaid_receivables": {
+                    "value": self._to_float(current_receivables),
+                    "change_percent": self._card_trend(current_receivables, prev_receivables),
+                },
+                "total_debts": {
+                    "value": self._to_float(current_debts),
+                    "change_percent": self._card_trend(current_debts, prev_debts),
+                },
+            },
+            "top_clients": top_clients,
+            "revenue_chart": {
+                "points": chart_points,
+                "summary": {
+                    "total_revenue": self._to_float(total_sales),
+                    "total_expenses": self._to_float(total_expenses),
+                    "net_result": self._to_float(net_result),
+                },
+            },
+            "reminders": reminders,
+            "recent_invoices": recent_invoices,
+            "counts": {
+                "total_invoices": base_qs.count(),
+                "overdue_invoices": len(reminders),
+                # Count invoices by type so clients + suppliers remains aligned with invoice totals
+                "clients": base_qs.filter(invoice_type="vente").count(),
+                "suppliers": base_qs.filter(invoice_type="achat").count(),
+            },
+        }
+
+        return APIResponse.success(message="Dashboard overview retrieved successfully.", data=payload)
+    
+    
+    
