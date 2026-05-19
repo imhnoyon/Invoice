@@ -1,14 +1,42 @@
 import stripe
 from django.conf import settings
 from django.utils import timezone
+from django.utils.formats import date_format
+from django.utils.translation import override
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework import status, views, permissions
 from rest_framework.response import Response
 from .models import SubscriptionPlan, UserSubscription, PaymentHistory
-from .serializers import SubscriptionPlanSerializer, UserSubscriptionSerializer
+from .serializers import (
+    SubscriptionPlanSerializer,
+    UserSubscriptionSerializer,
+    SubscriptionOverviewSerializer,
+)
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
+
+
+def _format_french_date(value):
+    if not value:
+        return None
+    local_value = timezone.localtime(value)
+    with override('fr'):
+        return date_format(local_value, 'j F Y', use_l10n=True)
+
+
+def _format_amount(value):
+    return f"{value:.2f}"
+
+
+def _status_label(status):
+    labels = {
+        'ACTIVE': 'Actif',
+        'PAST_DUE': 'En retard',
+        'CANCELED': 'Annulé',
+        'EXPIRED': 'Expiré',
+    }
+    return labels.get(status, status)
 
 class PlanListView(views.APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -329,4 +357,69 @@ class SubscriptionStatusView(views.APIView):
     def get(self, request):
         user_sub, created = UserSubscription.objects.get_or_create(user=request.user)
         serializer = UserSubscriptionSerializer(user_sub)
+        return Response(serializer.data)
+
+
+class SubscriptionOverviewView(views.APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user_sub = UserSubscription.objects.select_related('plan').filter(user=request.user).first()
+        payments = PaymentHistory.objects.filter(user=request.user).order_by('-created_at')
+
+        current_plan_name = None
+        current_plan_id = None
+        monthly_amount = None
+        next_billing_date = None
+        status_code = 'EXPIRED'
+
+        if user_sub:
+            current_plan_id = user_sub.plan_id
+            current_plan_name = user_sub.plan.name if user_sub.plan else None
+            monthly_amount = user_sub.plan.monthly_amount if user_sub.plan else None
+            next_billing_date = user_sub.end_date
+            status_code = user_sub.status or 'EXPIRED'
+
+        current_plan_payload = {
+            'plan_id': current_plan_id,
+            'plan_name': current_plan_name,
+            'status': status_code,
+            'status_label': _status_label(status_code),
+            'next_billing_date': next_billing_date,
+            'next_billing_date_display': _format_french_date(next_billing_date),
+            'monthly_amount': monthly_amount,
+            'monthly_amount_display': _format_amount(monthly_amount) if monthly_amount is not None else None,
+            'manage_label': "Gérer l'abonnement",
+        }
+
+        invoice_history = []
+        for index, payment in enumerate(payments, start=1):
+            invoice_number = payment.stripe_invoice_id
+            hosted_url = None
+
+            if payment.stripe_invoice_id:
+                try:
+                    stripe_invoice = stripe.Invoice.retrieve(payment.stripe_invoice_id)
+                    invoice_number = getattr(stripe_invoice, 'number', None) or stripe_invoice.get('number') or payment.stripe_invoice_id
+                    hosted_url = getattr(stripe_invoice, 'hosted_invoice_url', None) or stripe_invoice.get('hosted_invoice_url') or stripe_invoice.get('invoice_pdf')
+                except Exception:
+                    invoice_number = payment.stripe_invoice_id
+
+            invoice_history.append({
+                'no': index,
+                'invoice_id': invoice_number,
+                'invoice_date': payment.created_at,
+                'invoice_date_display': _format_french_date(payment.created_at),
+                'amount': payment.amount,
+                'amount_display': _format_amount(payment.amount),
+                'plan': current_plan_name,
+                'action_url': hosted_url,
+                'action_label': 'Voir',
+            })
+
+        payload = {
+            'current_plan': current_plan_payload,
+            'invoice_history': invoice_history,
+        }
+        serializer = SubscriptionOverviewSerializer(instance=payload)
         return Response(serializer.data)

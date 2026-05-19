@@ -8,4 +8,5 @@ urlpatterns = [
     path('cancel/', CancelSubscriptionView.as_view(), name='cancel-subscription'),
     path('reactivate/', ReactivateSubscriptionView.as_view(), name='reactivate-subscription'),
     path('status/', SubscriptionStatusView.as_view(), name='subscription-status'),
+    path('overview/', SubscriptionOverviewView.as_view(), name='subscription-overview'),
 ]
