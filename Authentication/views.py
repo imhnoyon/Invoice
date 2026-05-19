@@ -4,6 +4,8 @@ from Authentication.serializers import RegisterSerializer
 from utils.api_response import APIResponse
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
+from .serializers import *
+from rest_framework.permissions import IsAuthenticated
 
 
 class RegisterView(APIView):
@@ -59,3 +61,83 @@ class LoginView(APIView):
             }
         )
         
+        
+        
+# Profile 
+class UserDetailsAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+
+        serializer = UserSerializer(
+            request.user,
+            context={"request": request}
+        )
+
+        return APIResponse.success(
+            message="User details retrieved successfully.",
+            data=serializer.data,
+            status_code=status.HTTP_200_OK
+        )
+        
+    def patch(self, request):
+        serializer = UserSerializer(
+            request.user,
+            data=request.data,
+            partial=True,
+            context={"request": request}
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return APIResponse.success(
+                message="User details updated successfully.",
+                data=serializer.data,
+                status_code=status.HTTP_200_OK
+            )
+
+        return APIResponse.error(
+            message="Failed to update user details.",
+            data=serializer.errors,
+            status_code=status.HTTP_400_BAD_REQUEST
+        )
+        
+        
+# Personal details update 
+class UserpersonalDetailsAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+
+        serializer = UserpersonalDetailsSerializer(
+            request.user,
+            context={"request": request}
+        )
+
+        return APIResponse.success(
+            message="User details retrieved successfully.",
+            data=serializer.data,
+            status_code=status.HTTP_200_OK
+        )
+        
+    def patch(self, request):
+        serializer = UserpersonalDetailsSerializer(
+            request.user,
+            data=request.data,
+            partial=True,
+            context={"request": request}
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return APIResponse.success(
+                message="User details updated successfully.",
+                data=serializer.data,
+                status_code=status.HTTP_200_OK
+            )
+
+        return APIResponse.error(
+            message="Failed to update user details.",
+            data=serializer.errors,
+            status_code=status.HTTP_400_BAD_REQUEST
+        )

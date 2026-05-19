@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import User
+from django.utils.translation import override
 
 
 
@@ -29,7 +30,19 @@ class RegisterSerializer(serializers.ModelSerializer):
 
 
 
+class UserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ["id", "company_name", "company_address", "company_country",  "email", "siren_siret_number", "default_currency", 
+                  "phone_number", "legal_form", "business_sector", "share_capital", "rcs_city",]
 
+
+
+class UserpersonalDetailsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ["id", "full_name", "surename", "email", "phone_number", "profile_picture"]
+    
    
 
     
