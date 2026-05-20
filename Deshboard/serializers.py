@@ -1,6 +1,8 @@
 from rest_framework import serializers
-from .models import Client, Supplier
+from .models import Client, Supplier, BankOperation, Invoice
 from decimal import Decimal
+from django.db import transaction
+from django.utils import timezone
 
 
 class IndependentClientSerializer(serializers.ModelSerializer):
@@ -367,4 +369,216 @@ class InvoiceShortListSerializer(serializers.ModelSerializer):
                 return f"{obj.supplier.first_name} {obj.supplier.last_name}"
             return obj.supplier.company_name or ""
         return ""
+
+
+class BankOperationSerializer(serializers.ModelSerializer):
+    invoice = serializers.PrimaryKeyRelatedField(source="linked_invoice", queryset=Invoice.objects.all(), write_only=True, required=False)
+    category = serializers.CharField(required=False, allow_blank=True)
+    invoice_number = serializers.CharField(source="linked_invoice.invoice_number", read_only=True)
+    invoice_total = serializers.DecimalField(source="linked_invoice.total_ttc", max_digits=12, decimal_places=2, read_only=True)
+    invoice_remaining_balance = serializers.SerializerMethodField()
+    payment_status = serializers.SerializerMethodField()
+    reconciliation_status_label = serializers.SerializerMethodField()
+    payment_status_label = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BankOperation
+        fields = [
+            "id",
+            "invoice",
+            "linked_invoice",
+            "invoice_number",
+            "invoice_total",
+            "invoice_remaining_balance",
+            "payment_date",
+            "category",
+            "amount",
+            "payment_direction",
+            "payment_method",
+            "bank_account",
+            "bank_reference",
+            "attachment",
+            "notes",
+            "reconciliation_status",
+            "reconciliation_status_label",
+            "payment_status",
+            "payment_status_label",
+            "is_validated",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "invoice_number",
+            "invoice_total",
+            "invoice_remaining_balance",
+            "reconciliation_status",
+            "reconciliation_status_label",
+            "payment_status",
+            "payment_status_label",
+            "is_validated",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_invoice_remaining_balance(self, obj):
+        if not obj.linked_invoice:
+            return None
+        return obj.linked_invoice.total_ttc - obj.linked_invoice.amount_paid
+
+    def get_payment_status(self, obj):
+        return obj.get_payment_status()
+
+    def get_payment_status_label(self, obj):
+        labels = {
+            "unpaid": "Unpaid",
+            "partial": "Partial",
+            "paid": "Paid",
+            "overpaid": "Overpaid",
+            "pending": "Pending",
+        }
+        return labels.get(obj.get_payment_status(), obj.get_payment_status())
+
+    def get_reconciliation_status_label(self, obj):
+        labels = {
+            "not_linked": "Not linked",
+            "partially_reconciled": "Partially reconciled",
+            "reconciled": "Reconciled / Validated",
+        }
+        return labels.get(obj.get_reconciliation_status(), obj.get_reconciliation_status())
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        linked_invoice = attrs.get("linked_invoice")
+
+        if linked_invoice and request and linked_invoice.company != request.user:
+            raise serializers.ValidationError({"linked_invoice": "This invoice does not belong to your account."})
+        return attrs
+
+    def create(self, validated_data):
+        request = self.context.get("request")
+        if request and request.user:
+            validated_data["user"] = request.user
+
+        linked_invoice = validated_data.get("linked_invoice")
+        if linked_invoice and not validated_data.get("category"):
+            validated_data["category"] = f"Paiement lié à la facture: {linked_invoice.invoice_number}"
+
+        with transaction.atomic():
+            return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        with transaction.atomic():
+            instance.revert_from_invoice()
+
+            for attr, value in validated_data.items():
+                setattr(instance, attr, value)
+
+            if instance.linked_invoice and not instance.category:
+                instance.category = f"Paiement lié à la facture: {instance.linked_invoice.invoice_number}"
+
+            if not instance.linked_invoice:
+                instance.reconciliation_status = "not_linked"
+            instance.apply_to_invoice()
+            instance.save()
+            return instance
+
+
+class BankOperationSummarySerializer(serializers.Serializer):
+    month = serializers.CharField()
+    incoming_total = serializers.DecimalField(max_digits=12, decimal_places=2)
+    outgoing_total = serializers.DecimalField(max_digits=12, decimal_places=2)
+    net_total = serializers.DecimalField(max_digits=12, decimal_places=2)
+    invoice_total = serializers.DecimalField(max_digits=12, decimal_places=2)
+    payment_total = serializers.DecimalField(max_digits=12, decimal_places=2)
+    manual_total = serializers.DecimalField(max_digits=12, decimal_places=2)
+    validated_count = serializers.IntegerField()
+    pending_count = serializers.IntegerField()
+
+
+class BankOperationCreateResponseSerializer(serializers.Serializer):
+    operation = BankOperationSerializer()
+    invoice_payment_status = serializers.CharField(allow_null=True)
+    reconciliation_status = serializers.CharField()
+
+
+class BankOperationAccountingBlockSerializer(serializers.Serializer):
+    account = serializers.SerializerMethodField()
+    accounting_export = serializers.SerializerMethodField()
+    accounting_label_search = serializers.SerializerMethodField()
+    third_party_accounting = serializers.SerializerMethodField()
+    automatic_third_party_accounting = serializers.SerializerMethodField()
+    final_export = serializers.SerializerMethodField()
+    income_statement_year = serializers.SerializerMethodField()
+
+    def _counterparty_name(self, obj):
+        invoice = obj.linked_invoice
+        if not invoice:
+            return obj.category or ""
+
+        if invoice.client:
+            if invoice.client.client_type == "Indépendant":
+                return f"{invoice.client.first_name} {invoice.client.last_name}".strip()
+            return invoice.client.company_name or invoice.client.email or ""
+
+        if invoice.supplier:
+            if invoice.supplier.client_type == "Indépendant":
+                return f"{invoice.supplier.first_name} {invoice.supplier.last_name}".strip()
+            return invoice.supplier.company_name or invoice.supplier.email or ""
+
+        return obj.category or ""
+
+    def get_account(self, obj):
+        user = getattr(obj, "user", None)
+        if not user:
+            return ""
+        return user.company_name or user.full_name or user.email or ""
+
+    def get_accounting_export(self, obj):
+        if obj.bank_reference:
+            return obj.bank_reference
+        if obj.linked_invoice:
+            return obj.linked_invoice.invoice_number
+        return f"TRX-{obj.id:06d}"
+
+    def get_accounting_label_search(self, obj):
+        return "Entree" if obj.payment_direction == "incoming" else "Sortie"
+
+    def get_third_party_accounting(self, obj):
+        return self._counterparty_name(obj)
+
+    def get_automatic_third_party_accounting(self, obj):
+        labels = {
+            "bank_transfer": "Virement",
+            "cash": "Espèces",
+            "card": "Carte",
+            "cheque": "Chèque",
+            "direct_debit": "Prelevement",
+            "other": "Autre",
+        }
+        return labels.get(obj.payment_method, obj.payment_method)
+
+    def get_final_export(self, obj):
+        if obj.bank_reference:
+            return obj.bank_reference
+        if obj.linked_invoice:
+            return f"REF-{obj.linked_invoice.invoice_number}"
+        return f"REF-{obj.id:06d}"
+
+    def get_income_statement_year(self, obj):
+        if obj.payment_date:
+            return obj.payment_date.year
+        return timezone.now().year
+
+
+class BankOperationDetailResponseSerializer(serializers.Serializer):
+    pure_accounting_block = BankOperationAccountingBlockSerializer(source="*")
+    advanced_reconciliation_block = serializers.SerializerMethodField()
+
+    def get_advanced_reconciliation_block(self, obj):
+        user = getattr(obj, "user", None)
+        account = ""
+        if user:
+            account = user.company_name or user.full_name or user.email or ""
+        return {"account": account}
     

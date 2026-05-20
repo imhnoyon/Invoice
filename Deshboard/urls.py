@@ -26,4 +26,12 @@ urlpatterns = [
 
     # dashboard overview
     path("dashboard/overview/", DashboardOverviewView.as_view(), name="dashboard-overview"),
+
+    # bank / payment operations
+    path("payments/modes/", BankOperationModeView.as_view(), name="bank-operation-modes"),
+    path("payments/", BankOperationListCreateView.as_view(), name="bank-operation-list-create"),
+    path("payments/<int:pk>/", BankOperationDetailView.as_view(), name="bank-operation-detail"),
+    path("payments/summary/", BankOperationSummaryView.as_view(), name="bank-operation-summary"),
+    
+  
 ]

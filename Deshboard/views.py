@@ -6,14 +6,15 @@ from Authentication import models
 from utils.paginations import CustomPagination
 from utils.api_response import APIResponse
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from django.db.models import Q, Max
+from django.db.models import Q, Max, Count
 from decimal import Decimal
 from django.db.models import Sum, F, Value, DecimalField, ExpressionWrapper
 from django.db.models.functions import Coalesce, TruncMonth
 from django.utils import timezone
 from dateutil.relativedelta import relativedelta
+from django.db import transaction
 
-from .models import Client, Invoice, Supplier
+from .models import Client, Invoice, Supplier, BankOperation
 from .serializers import (
    IndependentClientSerializer,
     CompanyClientSerializer,
@@ -24,7 +25,11 @@ from .serializers import (
     InvoiceCreateSerializer,
     InvoiceListSerializer,
     InvoiceShortListSerializer,
+    BankOperationSerializer,
+    BankOperationDetailResponseSerializer,
+    BankOperationSummarySerializer,
 )
+from Subscriptions.models import UserSubscription
 
 CLIENT_SERIALIZER_MAP = {
     "Indépendant": IndependentClientSerializer,
@@ -815,6 +820,252 @@ class DashboardOverviewView(APIView):
         }
 
         return APIResponse.success(message="Dashboard overview retrieved successfully.", data=payload)
+
+
+class BankOperationModeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        data = {
+            "title": "Sélectionner un mode de paiement",
+            "subtitle": "Choisissez votre méthode de paiement",
+            "modes": [
+                {
+                    "value": "invoice_linked",
+                    "title": "Paiement lié à une facture",
+                    "description": "Enregistrez un paiement pour une facture existante. La direction du paiement est automatiquement déterminée.",
+                },
+                {
+                    "value": "manual",
+                    "title": "Paiement manuel",
+                    "description": "Enregistrez un paiement en dehors des factures (salaire, impôts, frais bancaires, etc.). Vous spécifiez la direction du paiement.",
+                },
+            ],
+        }
+        return APIResponse.success(message="Payment modes retrieved successfully.", data=data)
+
+
+class BankOperationListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get_subscription_state(self, user):
+        user_subscription = UserSubscription.objects.select_related("plan").filter(user=user).first()
+        plan_name = (user_subscription.plan.name if user_subscription and user_subscription.plan else "") or ""
+        is_pro_plan = bool(plan_name) and "pro" in plan_name.lower()
+        return {
+            "is_pro_plan": is_pro_plan,
+            "plan_name": plan_name or ("Pro Plan" if is_pro_plan else "Basic Plan"),
+            "show_pro_features": is_pro_plan,
+        }
+
+    def get_queryset(self, request):
+        queryset = BankOperation.objects.select_related("linked_invoice", "user").filter(user=request.user)
+        search = request.query_params.get("search")
+        status_filter = request.query_params.get("payment_status")
+        reconciliation_filter = request.query_params.get("reconciliation_status")
+        direction_filter = request.query_params.get("payment_direction")
+
+        if search:
+            queryset = queryset.filter(
+                Q(category__icontains=search)
+                | Q(bank_reference__icontains=search)
+                | Q(notes__icontains=search)
+                | Q(linked_invoice__invoice_number__icontains=search)
+            )
+        if direction_filter:
+            queryset = queryset.filter(payment_direction=direction_filter)
+        if reconciliation_filter:
+            queryset = queryset.filter(reconciliation_status=reconciliation_filter)
+
+        if status_filter:
+            filtered_ids = []
+            for item in queryset:
+                if item.get_payment_status() == status_filter:
+                    filtered_ids.append(item.id)
+            queryset = queryset.filter(id__in=filtered_ids)
+
+        return queryset.order_by("-payment_date", "-id")
+
+    def get_invoice_choices(self, request):
+        invoices = (
+            Invoice.objects.select_related("client", "supplier")
+            .filter(company=request.user)
+            .order_by("-invoice_date", "-id")
+        )
+        choices = []
+        for invoice in invoices:
+            remaining_balance = Decimal(str(invoice.total_ttc)) - Decimal(str(invoice.amount_paid))
+            if remaining_balance <= 0:
+                continue
+
+            if invoice.client:
+                party_name = invoice.client.company_name or invoice.client.email
+            elif invoice.supplier:
+                party_name = invoice.supplier.company_name or invoice.supplier.email
+            else:
+                party_name = "N/A"
+
+            choices.append({
+                "id": invoice.id,
+                "invoice_id": invoice.invoice_number,
+                "party_name": party_name,
+                "remaining_balance": remaining_balance,
+            })
+        return choices
+
+    def get(self, request):
+        paginator = CustomPagination()
+        queryset = self.get_queryset(request)
+        page = paginator.paginate_queryset(queryset, request)
+        serializer = BankOperationSerializer(page, many=True, context={"request": request})
+        response = paginator.get_paginated_response(serializer.data)
+        response.data["invoice_choices"] = self.get_invoice_choices(request)
+        return response
+
+    def post(self, request):
+        serializer = BankOperationSerializer(data=request.data, context={"request": request})
+        if serializer.is_valid():
+            with transaction.atomic():
+                operation = serializer.save()
+            response_data = BankOperationSerializer(operation, context={"request": request}).data
+            payload = {
+                "operation": response_data,
+                "invoice_payment_status": operation.get_payment_status(),
+                "reconciliation_status": operation.reconciliation_status,
+            }
+            return APIResponse.success(message="Payment saved successfully.", data=payload, status_code=status.HTTP_201_CREATED)
+        return APIResponse.error(message="Validation error.", data=serializer.errors, status_code=status.HTTP_400_BAD_REQUEST)
+
+
+
+
+
+
+class BankOperationDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get_subscription_state(self, user):
+        user_subscription = UserSubscription.objects.select_related("plan").filter(user=user).first()
+        plan_name = (user_subscription.plan.name if user_subscription and user_subscription.plan else "") or ""
+        is_pro_plan = bool(plan_name) and "pro" in plan_name.lower()
+        return {
+            "is_pro_plan": is_pro_plan,
+            "plan_name": plan_name or ("Pro Plan" if is_pro_plan else "Basic Plan"),
+            "show_pro_features": is_pro_plan,
+        }
+
+    def get_object(self, pk, user):
+        try:
+            return BankOperation.objects.select_related("linked_invoice", "user").get(pk=pk, user=user)
+        except BankOperation.DoesNotExist:
+            return None
+
+    def get(self, request, pk):
+        operation = self.get_object(pk, request.user)
+        if not operation:
+            return APIResponse.error({"detail": "Payment not found."}, status_code=status.HTTP_404_NOT_FOUND)
+
+        subscription_state = self.get_subscription_state(request.user)
+        return APIResponse.success(
+            message="Payment retrieved successfully.",
+            data={
+                "show_details": bool(subscription_state["is_pro_plan"]),
+                "details": BankOperationDetailResponseSerializer(operation, context={"request": request}).data,
+            },
+        )
+
+    def patch(self, request, pk):
+        operation = self.get_object(pk, request.user)
+        if not operation:
+            return APIResponse.error({"detail": "Payment not found."}, status_code=status.HTTP_404_NOT_FOUND)
+
+        serializer = BankOperationSerializer(operation, data=request.data, partial=True, context={"request": request})
+        if serializer.is_valid():
+            with transaction.atomic():
+                updated_operation = serializer.save()
+            return APIResponse.success(message="Payment updated successfully.", data=BankOperationSerializer(updated_operation, context={"request": request}).data)
+        return APIResponse.error(message="Validation error.", data=serializer.errors, status_code=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        operation = self.get_object(pk, request.user)
+        if not operation:
+            return APIResponse.error({"detail": "Payment not found."}, status_code=status.HTTP_404_NOT_FOUND)
+        operation.delete()
+        return APIResponse.success(message="Payment deleted successfully.", data=None, status_code=status.HTTP_204_NO_CONTENT)
+
+
+class BankOperationSummaryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        year = request.query_params.get("year")
+        month = request.query_params.get("month")
+
+        operations = BankOperation.objects.filter(user=request.user)
+        invoices = Invoice.objects.filter(company=request.user)
+
+        if year:
+            operations = operations.filter(payment_date__year=year)
+            invoices = invoices.filter(invoice_date__year=year)
+        if month:
+            operations = operations.filter(payment_date__month=month)
+            invoices = invoices.filter(invoice_date__month=month)
+
+        incoming_ops = operations.filter(payment_direction="incoming")
+        outgoing_ops = operations.filter(payment_direction="outgoing")
+
+        incoming_total = incoming_ops.aggregate(total=Coalesce(Sum("amount"), Value(0, output_field=DecimalField(max_digits=12, decimal_places=2))))["total"]
+        outgoing_total = outgoing_ops.aggregate(total=Coalesce(Sum("amount"), Value(0, output_field=DecimalField(max_digits=12, decimal_places=2))))["total"]
+        invoice_total = invoices.aggregate(total=Coalesce(Sum("total_ttc"), Value(0, output_field=DecimalField(max_digits=12, decimal_places=2))))["total"]
+        payment_total = operations.aggregate(total=Coalesce(Sum("amount"), Value(0, output_field=DecimalField(max_digits=12, decimal_places=2))))["total"]
+
+        monthly_rows = (
+            operations.annotate(month=TruncMonth("payment_date"))
+            .values("month")
+            .annotate(
+                incoming_total=Coalesce(Sum("amount", filter=Q(payment_direction="incoming")), Value(0, output_field=DecimalField(max_digits=12, decimal_places=2))),
+                outgoing_total=Coalesce(Sum("amount", filter=Q(payment_direction="outgoing")), Value(0, output_field=DecimalField(max_digits=12, decimal_places=2))),
+                validated_count=Count("id", filter=Q(is_validated=True)),
+                pending_count=Count("id", filter=Q(is_validated=False)),
+            )
+            .order_by("month")
+        )
+
+        summary_rows = []
+        for row in monthly_rows:
+            incoming_value = row["incoming_total"] or Decimal("0")
+            outgoing_value = row["outgoing_total"] or Decimal("0")
+            summary_rows.append({
+                "month": row["month"].strftime("%Y-%m") if row.get("month") else "",
+                "incoming_total": incoming_value,
+                "outgoing_total": outgoing_value,
+                "net_total": incoming_value - outgoing_value,
+                "invoice_total": invoice_total,
+                "payment_total": payment_total,
+                "manual_total": payment_total,
+                "validated_count": row["validated_count"],
+                "pending_count": row["pending_count"],
+            })
+
+        payload = {
+            "current_month": {
+                "incoming_total": incoming_total,
+                "outgoing_total": outgoing_total,
+                "net_total": incoming_total - outgoing_total,
+                "invoice_total": invoice_total,
+                "payment_total": payment_total,
+            },
+            "monthly_summary": summary_rows,
+            "payment_totals": {
+                "unpaid": sum(1 for operation in operations if operation.get_payment_status() == "unpaid"),
+                "partial": sum(1 for operation in operations if operation.get_payment_status() == "partial"),
+                "paid": sum(1 for operation in operations if operation.get_payment_status() == "paid"),
+                "overpaid": sum(1 for operation in operations if operation.get_payment_status() == "overpaid"),
+                "pending": sum(1 for operation in operations if operation.get_payment_status() == "pending"),
+            },
+        }
+        return APIResponse.success(message="Bank summary retrieved successfully.", data=payload)
     
     
     

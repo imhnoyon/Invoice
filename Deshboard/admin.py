@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Client, Invoice, Supplier
+from .models import Client, Invoice, Supplier, BankOperation
 # Register your models here.
 @admin.register(Client)
 class ClientAdmin(admin.ModelAdmin):
@@ -21,3 +21,10 @@ class InvoiceAdmin(admin.ModelAdmin):
     list_display = ("id", "company", "client", "invoice_number", "accounting_number", "invoice_type", "invoice_subtype", "invoice_date", "created_at")
     list_filter = ("invoice_date", )
     search_fields = ("company__username", "client__email")
+
+
+@admin.register(BankOperation)
+class BankOperationAdmin(admin.ModelAdmin):
+    list_display = ("id", "user", "linked_invoice", "payment_date", "category", "amount", "payment_direction", "bank_account", "reconciliation_status", "is_validated")
+    list_filter = ("payment_direction", "bank_account", "reconciliation_status", "is_validated", "payment_date")
+    search_fields = ("category", "bank_reference", "notes", "linked_invoice__invoice_number", "user__email")

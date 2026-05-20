@@ -287,3 +287,121 @@ class InvoiceLine(models.Model):
 
     def __str__(self):
         return f"{self.invoice.invoice_number} – {self.description}"
+
+
+class BankOperation(models.Model):
+    PAYMENT_DIRECTION_CHOICES = (
+        ("incoming", "Incoming"),
+        ("outgoing", "Outgoing"),
+    )
+
+    BANK_ACCOUNT_CHOICES = (
+        ("professional", "Professional account"),
+        ("personal", "Personal account"),
+    )
+
+    PAYMENT_METHOD_CHOICES = (
+        ("bank_transfer", "Bank transfer"),
+        ("cash", "Cash"),
+        ("card", "Card"),
+        ("cheque", "Cheque"),
+        ("direct_debit", "Direct debit"),
+        ("other", "Other"),
+    )
+
+    RECONCILIATION_STATUS_CHOICES = (
+        ("not_linked", "Not linked"),
+        ("partially_reconciled", "Partially reconciled"),
+        ("reconciled", "Reconciled / Validated"),
+    )
+
+    PAYMENT_STATUS_CHOICES = (
+        ("unpaid", "Unpaid"),
+        ("partial", "Partial"),
+        ("paid", "Paid"),
+        ("overpaid", "Overpaid"),
+        ("pending", "Pending"),
+    )
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="bank_operations")
+    linked_invoice = models.ForeignKey(Invoice, null=True, blank=True, on_delete=models.SET_NULL, related_name="bank_operations")
+
+    payment_date = models.DateField()
+    category = models.CharField(max_length=120)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    payment_direction = models.CharField(max_length=20, choices=PAYMENT_DIRECTION_CHOICES)
+    payment_method = models.CharField(max_length=50, choices=PAYMENT_METHOD_CHOICES)
+    bank_account = models.CharField(max_length=20, choices=BANK_ACCOUNT_CHOICES)
+    bank_reference = models.CharField(max_length=255, blank=True)
+    attachment = models.FileField(upload_to="bank_operations/%Y/%m/", null=True, blank=True)
+    notes = models.TextField(blank=True)
+
+    reconciliation_status = models.CharField(
+        max_length=30,
+        choices=RECONCILIATION_STATUS_CHOICES,
+        default="not_linked",
+    )
+    is_validated = models.BooleanField(default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-payment_date", "-id"]
+
+    def get_payment_status(self):
+        if not self.linked_invoice:
+            return "pending"
+
+        remaining = Decimal(str(self.linked_invoice.total_ttc)) - Decimal(str(self.linked_invoice.amount_paid))
+        if remaining > 0 and Decimal(str(self.linked_invoice.amount_paid)) <= 0:
+            return "unpaid"
+        if remaining > 0:
+            return "partial"
+        if remaining == 0:
+            return "paid"
+        return "overpaid"
+
+    def get_reconciliation_status(self):
+        if not self.linked_invoice:
+            return "not_linked"
+        if self.reconciliation_status == "reconciled" or self.is_validated:
+            return "reconciled"
+        return "partially_reconciled"
+
+    def apply_to_invoice(self):
+        if not self.linked_invoice:
+            self.reconciliation_status = "not_linked"
+            return
+
+        invoice = self.linked_invoice
+        invoice.amount_paid = (Decimal(str(invoice.amount_paid)) + Decimal(str(self.amount))).quantize(Decimal("0.01"))
+        invoice.save(update_fields=["amount_paid", "updated_at"])
+
+        remaining = Decimal(str(invoice.total_ttc)) - Decimal(str(invoice.amount_paid))
+        if remaining <= 0:
+            self.reconciliation_status = "reconciled"
+            self.is_validated = True
+        else:
+            self.reconciliation_status = "partially_reconciled"
+
+    def revert_from_invoice(self):
+        if not self.linked_invoice:
+            return
+
+        invoice = self.linked_invoice
+        invoice.amount_paid = (Decimal(str(invoice.amount_paid)) - Decimal(str(self.amount))).quantize(Decimal("0.01"))
+        if invoice.amount_paid < 0:
+            invoice.amount_paid = Decimal("0.00")
+        invoice.save(update_fields=["amount_paid", "updated_at"])
+
+    def save(self, *args, **kwargs):
+        if self.linked_invoice and not self.pk:
+            self.apply_to_invoice()
+        elif not self.linked_invoice:
+            self.reconciliation_status = "not_linked"
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        self.revert_from_invoice()
+        return super().delete(*args, **kwargs)
