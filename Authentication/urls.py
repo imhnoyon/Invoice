@@ -6,5 +6,6 @@ urlpatterns = [
    path('login/', LoginView.as_view(), name='login'),
    path('profile/', UserDetailsAPIView.as_view(), name='user-details'),
    path('profile/personal/', UserpersonalDetailsAPIView.as_view(), name='user-personal-details'),
+   path('profile/password-change/', PasswordChangeAPIView.as_view(), name='password-change'),
 
 ]

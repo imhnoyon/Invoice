@@ -6,7 +6,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
 from .serializers import *
 from rest_framework.permissions import IsAuthenticated
-
+from django.contrib.auth.password_validation import validate_password
 
 class RegisterView(APIView):
     def post(self, request):
@@ -138,6 +138,27 @@ class UserpersonalDetailsAPIView(APIView):
 
         return APIResponse.error(
             message="Failed to update user details.",
+            data=serializer.errors,
+            status_code=status.HTTP_400_BAD_REQUEST
+        )
+
+
+
+
+class PasswordChangeAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+    def post(self, request):
+        serializer = PasswordChangeSerializer(data=request.data)
+        if serializer.is_valid():
+            new_password = serializer.validated_data["new_password"]
+            validate_password(new_password, request.user)
+            request.user.set_password(new_password)
+            request.user.save()
+            return APIResponse.success(
+                message="Password changed successfully."
+            )
+        return APIResponse.error(
+            message="Failed to change password.",
             data=serializer.errors,
             status_code=status.HTTP_400_BAD_REQUEST
         )
