@@ -914,12 +914,53 @@ class BankOperationListCreateView(APIView):
             })
         return choices
 
+    def get_summary_cards(self, request):
+        operations = BankOperation.objects.filter(user=request.user)
+        incoming_total = operations.filter(payment_direction="incoming").aggregate(
+            total=Coalesce(Sum("amount"), Value(Decimal("0"), output_field=DecimalField(max_digits=12, decimal_places=2)))
+        )["total"]
+        outgoing_total = operations.filter(payment_direction="outgoing").aggregate(
+            total=Coalesce(Sum("amount"), Value(Decimal("0"), output_field=DecimalField(max_digits=12, decimal_places=2)))
+        )["total"]
+        net_total = incoming_total - outgoing_total
+
+        def format_currency(value):
+            return f"{int(value):,} €".replace(",", " ") if value == value.to_integral() else f"{value:.2f} €".replace(".", ",")
+
+        return [
+            {
+                "key": "revenue",
+                "title": "Revenu total",
+                "value": format_currency(incoming_total),
+                "amount": incoming_total,
+                "tone": "success",
+                "icon": "revenue",
+            },
+            {
+                "key": "expenses",
+                "title": "Dépenses totales",
+                "value": format_currency(outgoing_total),
+                "amount": outgoing_total,
+                "tone": "danger",
+                "icon": "expenses",
+            },
+            {
+                "key": "net",
+                "title": "Solde net",
+                "value": format_currency(net_total),
+                "amount": net_total,
+                "tone": "primary",
+                "icon": "net",
+            },
+        ]
+
     def get(self, request):
         paginator = CustomPagination()
         queryset = self.get_queryset(request)
         page = paginator.paginate_queryset(queryset, request)
         serializer = BankOperationSerializer(page, many=True, context={"request": request})
         response = paginator.get_paginated_response(serializer.data)
+        response.data["summary_cards"] = self.get_summary_cards(request)
         response.data["invoice_choices"] = self.get_invoice_choices(request)
         return response
 
