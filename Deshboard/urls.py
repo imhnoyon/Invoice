@@ -1,6 +1,7 @@
 from django.urls import path
 from .views import *
 from .monthly_summary_view import MonthlySummaryAPIView
+from .accounting_export_view import AccountingExportAPIView, AccountingJournalListView
 
 urlpatterns = [
     # Client URLs
@@ -36,6 +37,10 @@ urlpatterns = [
     path("payments/", BankOperationListCreateView.as_view(), name="bank-operation-list-create"),
     path("payments/<int:pk>/", BankOperationDetailView.as_view(), name="bank-operation-detail"),
     path("payments/summary/", BankOperationSummaryView.as_view(), name="bank-operation-summary"),
+    
+    # accounting export endpoints (Pro Plan only)
+    path("accounting/export/", AccountingExportAPIView.as_view(), name="accounting-export"),
+    path("accounting/journal/", AccountingJournalListView.as_view(), name="accounting-journal-list"),
     
   
 ]
