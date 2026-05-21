@@ -1,5 +1,6 @@
 from django.urls import path
 from .views import *
+from .monthly_summary_view import MonthlySummaryAPIView
 
 urlpatterns = [
     # Client URLs
@@ -26,6 +27,9 @@ urlpatterns = [
 
     # dashboard overview
     path("dashboard/overview/", DashboardOverviewView.as_view(), name="dashboard-overview"),
+
+    # monthly summary
+    path("monthly-summary/", MonthlySummaryAPIView.as_view(), name="monthly-summary"),
 
     # bank / payment operations
     path("payments/modes/", BankOperationModeView.as_view(), name="bank-operation-modes"),
